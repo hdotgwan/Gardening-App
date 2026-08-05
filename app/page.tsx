@@ -34,6 +34,7 @@ type GardenItem = {
   widthM: number;
   lengthM: number;
   heightM: number;
+  rotation: number;
   shape: "rectangle" | "rounded" | "circle";
 };
 
@@ -140,13 +141,19 @@ function fuzzyPlantMatch(plant: Plant, query: string) {
   return haystack.split(/\s+/).some((word) => distance(needle, word) <= Math.max(1, Math.floor(needle.length * .25)));
 }
 
-function explicitTaskFromText(text: string): Task | null {
+function plantSearchCandidates(text: string) {
   const lower = text.toLowerCase();
-  if (!/\b(water|feed|fertili[sz]e|prune|trim|cut back|weed|plant|sow|harvest|check|move|repot|mow|deadhead|spray|protect)\b/.test(lower)) return null;
-  const day = /\btomorrow\b/.test(lower) ? "Tomorrow" : /\btoday\b/.test(lower) ? "Today" : null;
+  const preferred = [...lower.matchAll(/\b(?:buy|plant(?:ed|ing)?|sow(?:ed|ing)?|seed(?:ed|ing)?|water(?:ed|ing)?|prune(?:d|ing)?|repot(?:ted|ting)?|harvest(?:ed|ing)?)\s+(?:(?:some|new|the|my|a|an)\s+)*([a-z][a-z-]{2,})/g)].map((match) => match[1]);
+  const ignored = new Set(["about", "after", "again", "been", "before", "bits", "could", "flower", "garden", "going", "have", "likely", "leaves", "need", "noticed", "only", "plant", "planted", "planting", "plants", "rest", "should", "some", "sowed", "today", "tomorrow", "want", "water", "watered", "watering", "week", "with"]);
+  const general = lower.replace(/[^a-z\s-]/g, " ").split(/\s+/).filter((word) => word.length > 3 && !ignored.has(word));
+  return [...new Set([...preferred, ...general])].slice(0, 6);
+}
+
+function timingFromText(text: string) {
+  const lower = text.toLowerCase();
+  const day = /\btomorrow\b/.test(lower) ? "Tomorrow" : /\btoday\b/.test(lower) ? "Today" : /\bnext week\b/.test(lower) ? "Next week" : /\bthis week\b/.test(lower) ? "This week" : null;
   const clock = lower.match(/\b(?:at\s*)?([01]?\d|2[0-3])[:.]([0-5]\d)\b/);
   const meridiem = lower.match(/\b(?:at\s*)?(1[0-2]|0?[1-9])\s*(am|pm)\b/);
-  if (!day && !clock && !meridiem) return null;
   let time = "";
   if (clock) time = `${clock[1].padStart(2, "0")}:${clock[2]}`;
   if (meridiem) {
@@ -154,14 +161,65 @@ function explicitTaskFromText(text: string): Task | null {
     if (meridiem[2] === "pm") hour += 12;
     time = `${String(hour).padStart(2, "0")}:00`;
   }
-  let title = text
-    .replace(/\b(today|tomorrow)\b/gi, "")
-    .replace(/\b(?:at\s*)?(?:[01]?\d|2[0-3])[:.]\d{2}\b/gi, "")
-    .replace(/\b(?:at\s*)?(?:1[0-2]|0?[1-9])\s*(?:am|pm)\b/gi, "")
-    .replace(/^(?:please\s+|remember to\s+|i need to\s+|i should\s+)/i, "")
-    .replace(/[.!]+$/g, "").replace(/\s+/g, " ").trim();
-  title = title.charAt(0).toUpperCase() + title.slice(1);
-  return { id: Date.now(), due: `${day ?? "Scheduled"}${time ? ` · ${time}` : ""}`, title, detail: "Created directly from your journal note", emoji: /water/.test(lower) ? "💧" : "✓", done: false };
+  return { due: `${day ?? "Scheduled"}${time ? ` · ${time}` : ""}`, hasSchedule: Boolean(day || time) };
+}
+
+function task(id: number, due: string, title: string, detail: string, emoji: string): Task {
+  return { id, due, title, detail, emoji, done: false };
+}
+
+function tasksFromJournal(text: string, plant: Plant | null): Task[] {
+  const lower = text.toLowerCase();
+  const now = Date.now();
+  const plantName = plant?.name.toLowerCase();
+  const timing = timingFromText(text);
+  const created: Task[] = [];
+
+  // Shopping or planning language must never create planting-care reminders.
+  if (/\b(?:buy|purchase|order|pick up|get some|need to get)\b/.test(lower)) {
+    const title = plant ? `Buy ${plant.name} plants` : "Buy garden supplies or plants";
+    created.push(task(now, timing.due, title, "Shopping reminder from your journal note", "🛒"));
+    return created;
+  }
+
+  const waterMentioned = /\bwater(?:ed|ing)?\b/.test(lower);
+  if (waterMentioned && (timing.hasSchedule || /\bneed to water\b/.test(lower))) {
+    const objectMatch = text.match(/\bwater\s+(?:the\s+)?(.+?)(?=\s+(?:today|tomorrow|this week|next week|at\s+\d)|[,.;]|$)/i);
+    const object = objectMatch?.[1]?.replace(/\b(?:and|for)\s+the\s+rest.*$/i, "").trim();
+    const target = plantName ?? (object && !/^(?:today|tomorrow)$/i.test(object) ? object.toLowerCase() : "newly planted area");
+    created.push(task(now, timing.due, `Water ${target}`, "Water only if the soil needs it; check recent rain first", "💧"));
+    if (/\b(?:the\s+)?rest of (?:this )?week\b/.test(lower)) {
+      created.push(task(now + 1, "Rest of this week", `Keep checking moisture for ${target}`, "Water when the top layer begins to dry rather than automatically", "💧"));
+    }
+    return created;
+  }
+
+  const completedPlanting = /\b(?:planted|sowed|seeded|transplanted)\b/.test(lower) || /\b(?:i(?:'m| am)|we(?:'re| are))\s+(?:currently\s+)?(?:planting|sowing|transplanting)\b/.test(lower);
+  const futurePlanting = /\b(?:going to|plan(?:ning)? to|will|need to|want to)\s+(?:plant|sow|transplant)\b/.test(lower);
+  if (futurePlanting && !completedPlanting) {
+    created.push(task(now, timing.due, plantName ? `Plant ${plantName}` : "Complete planned planting", "Preparation reminder from your journal note", plant?.emoji ?? "🌱"));
+    return created;
+  }
+  if (completedPlanting) {
+    const name = plantName ?? "the new planting";
+    created.push(task(now, relativeDay(1), `Check soil around ${name}`, "Water only if the top layer feels dry", "💧"));
+    created.push(task(now + 1, relativeDay(7), `Check ${name} progress`, plant?.tip ?? "Look for healthy new growth", plant?.emoji ?? "🌱"));
+    if (plant?.harvestDays) created.push(task(now + 2, relativeDay(plant.harvestDays), `${plant.name} may be ready to harvest`, "Check maturity before picking", "🧺"));
+    return created;
+  }
+
+  const action = lower.match(/\b(feed|fertili[sz]e|prune|trim|cut back|weed|harvest|check|move|repot|mow|deadhead|spray|protect)\b/)?.[1];
+  if (action && timing.hasSchedule) {
+    const label = `${action.charAt(0).toUpperCase()}${action.slice(1)}${plantName ? ` ${plantName}` : " in the garden"}`;
+    created.push(task(now, timing.due, label, "Created directly from your journal note", /prune|trim|cut back|deadhead/.test(action) ? "✂️" : "✓"));
+    return created;
+  }
+
+  if (/\b(mildew|spot|yellow|pest|aphid|slug|problem|issue|damage)\b/.test(lower)) {
+    const name = plantName ?? "the affected area";
+    created.push(task(now, relativeDay(1), `Recheck ${name}`, plant?.issue ?? "Compare the affected area and take a photo", "🔎"));
+  }
+  return created;
 }
 
 export default function Home() {
@@ -182,6 +240,10 @@ export default function Home() {
   const [plantResults, setPlantResults] = useState<Plant[]>(builtInPlants.slice(0, 8));
   const [catalogueLoading, setCatalogueLoading] = useState(false);
   const [globalCatalogue, setGlobalCatalogue] = useState<boolean | null>(null);
+  const [cataloguePage, setCataloguePage] = useState(1);
+  const [catalogueHasMore, setCatalogueHasMore] = useState(false);
+  const [catalogueTotal, setCatalogueTotal] = useState<number | null>(null);
+  const [catalogueError, setCatalogueError] = useState("");
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const drag = useRef<{ id: number; offsetX: number; offsetY: number } | null>(null);
 
@@ -241,70 +303,59 @@ export default function Home() {
     return builtInPlants.find((plant) => lower.includes(plant.name.toLowerCase()) || lower.includes(plant.scientific.toLowerCase()) || lower.includes(plant.key.replaceAll("-", " "))) ?? null;
   };
 
-  const searchGlobalPlants = async (query: string) => {
+  const searchGlobalPlants = async (query: string, page = 1, append = false, updateDisplay = true) => {
     const local = builtInPlants.filter((plant) => fuzzyPlantMatch(plant, query));
-    if (!query.trim()) { setPlantResults(builtInPlants.slice(0, 8)); return builtInPlants.slice(0, 8); }
     setCatalogueLoading(true);
     try {
-      const response = await fetch(`/api/plants?q=${encodeURIComponent(query.trim())}`);
-      const data = await response.json() as { plants?: Plant[]; configured?: boolean };
+      const response = await fetch(`/api/plants?q=${encodeURIComponent(query.trim())}&page=${page}`);
+      const data = await response.json() as { plants?: Plant[]; configured?: boolean; hasMore?: boolean; total?: number | null; error?: string };
       setGlobalCatalogue(Boolean(data.configured));
-      const merged = [...local, ...(data.plants ?? [])].filter((plant, index, all) => all.findIndex((candidate) => candidate.key === plant.key) === index).slice(0, 12);
-      setPlantResults(merged);
+      setCatalogueError(data.error ?? "");
+      if (updateDisplay) {
+        setCatalogueHasMore(Boolean(data.hasMore));
+        setCataloguePage(page);
+        setCatalogueTotal(typeof data.total === "number" ? data.total : null);
+      }
+      const incoming = query.trim() ? [...local, ...(data.plants ?? [])] : page === 1 ? [...builtInPlants, ...(data.plants ?? [])] : (data.plants ?? []);
+      const unique = (plants: Plant[]) => plants.filter((plant, index, all) => all.findIndex((candidate) => candidate.key === plant.key) === index);
+      const merged = unique(incoming);
+      if (updateDisplay) setPlantResults((current) => append ? unique([...current, ...merged]) : merged);
       return merged;
     } catch {
-      setPlantResults(local);
+      setCatalogueError("The catalogue could not be reached just now.");
+      if (updateDisplay && !append) setPlantResults(query.trim() ? local : builtInPlants);
       return local;
     } finally {
       setCatalogueLoading(false);
     }
   };
 
+  useEffect(() => { void searchGlobalPlants("", 1); }, []);
+
   const analyseEntry = async () => {
     let plant = detectLocalPlant(journal);
-    const directTask = explicitTaskFromText(journal);
-    if (!plant && !directTask) {
-      const candidates = journal.toLowerCase().replace(/[^a-z\s-]/g, " ").split(/\s+/).filter((word) => word.length > 3 && !["planted", "planting", "watered", "today", "garden", "noticed", "leaves", "seeded", "sowed"].includes(word));
-      for (const candidate of candidates.slice(0, 4)) {
-        const results = await searchGlobalPlants(candidate);
+    if (!plant) {
+      const candidates = plantSearchCandidates(journal);
+      for (const candidate of candidates) {
+        const results = await searchGlobalPlants(candidate, 1, false, false);
         const exact = results.find((result) => result.name.toLowerCase() === candidate || result.scientific.toLowerCase().includes(candidate));
         if (exact) { plant = exact; break; }
       }
     }
-    const suggestions = directTask ? [directTask] : tasksFromEntry(journal, plant);
+    const suggestions = tasksFromJournal(journal, plant);
     setRecognized(plant);
     setProposedTasks(suggestions);
     setAnalysed(true);
   };
 
-  const tasksFromEntry = (text: string, plant: Plant | null): Task[] => {
-    const lower = text.toLowerCase();
-    const name = plant?.name ?? "this planting";
-    const created: Task[] = [];
-    const explicitTask = explicitTaskFromText(text);
-    if (explicitTask) return [explicitTask];
-    if (/plant|sow|seed|transplant/.test(lower)) {
-      created.push({ id: Date.now(), due: relativeDay(1), title: `Check soil around ${name.toLowerCase()}`, detail: "Water only if the top layer feels dry", emoji: "💧", done: false });
-      created.push({ id: Date.now() + 1, due: relativeDay(7), title: `Check ${name.toLowerCase()} progress`, detail: plant?.tip ?? "Look for healthy new growth", emoji: plant?.emoji ?? "🌱", done: false });
-      if (plant?.harvestDays) created.push({ id: Date.now() + 2, due: relativeDay(plant.harvestDays), title: `${plant.name} may be ready to harvest`, detail: "Check maturity before picking", emoji: "🧺", done: false });
-    } else if (/water/.test(lower)) {
-      created.push({ id: Date.now(), due: relativeDay(3), title: `Check moisture for ${name.toLowerCase()}`, detail: "Weather and soil may change the timing", emoji: "💧", done: false });
-    } else if (/mildew|spot|yellow|pest|aphid|slug|problem|issue|damage/.test(lower)) {
-      created.push({ id: Date.now(), due: relativeDay(1), title: `Recheck ${name.toLowerCase()}`, detail: plant?.issue ?? "Compare the affected area and take a photo", emoji: "🔎", done: false });
-    } else if (/prun|cut back|trim/.test(lower)) {
-      created.push({ id: Date.now(), due: relativeDay(7), title: `Check recovery of ${name.toLowerCase()}`, detail: "Look for healthy new growth", emoji: "✂️", done: false });
-    }
-    return created;
-  };
-
   const saveEntry = async () => {
     if (!journal.trim()) return;
     const plant = recognized ?? detectLocalPlant(journal);
-    const newTasks = analysed ? proposedTasks : tasksFromEntry(journal, plant);
+    const newTasks = analysed ? proposedTasks : tasksFromJournal(journal, plant);
     setEntries((current) => [{ id: Date.now(), date: "Today", text: journal.trim(), plant }, ...current]);
     setTasks((current) => [...newTasks, ...current]);
     try {
-      await fetch("/api/journal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body: journal.trim(), plantKey: plant?.key ?? null }) });
+      await fetch("/api/journal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body: journal.trim(), plantKey: plant?.key ?? null, tasks: newTasks.map((planned) => ({ title: planned.title, due: planned.due, kind: planned.emoji === "💧" ? "water" : planned.emoji === "🛒" ? "shopping" : "journal" })) }) });
     } catch { /* stays available in the current session */ }
     setJournal(""); setRecognized(null); setAnalysed(false); setProposedTasks([]);
     showToast(newTasks.length ? `Note saved · ${newTasks.length} reminder${newTasks.length === 1 ? "" : "s"} added` : "Note saved · no action needed");
@@ -312,12 +363,12 @@ export default function Home() {
 
   const addItem = (kind: GardenItem["kind"]) => {
     const defaults: Record<GardenItem["kind"], Omit<GardenItem, "id" | "kind" | "x" | "y">> = {
-      bed: { label: "New bed", emoji: "", widthM: 2.4, lengthM: 1.2, heightM: 0.2, shape: "rectangle" },
-      plant: { label: "New plant", emoji: "🌱", widthM: 0.7, lengthM: 0.7, heightM: 0.5, shape: "circle" },
-      tree: { label: "New tree", emoji: "🌳", widthM: 1.2, lengthM: 1.2, heightM: 3, shape: "circle" },
-      water: { label: "Water feature", emoji: "💧", widthM: 1.5, lengthM: 1.2, heightM: 0, shape: "rounded" },
-      seat: { label: "Seat", emoji: "", widthM: 1.5, lengthM: 0.5, heightM: 0.8, shape: "rectangle" },
-      path: { label: "Path", emoji: "", widthM: 1, lengthM: 3, heightM: 0, shape: "rounded" },
+      bed: { label: "New bed", emoji: "", widthM: 2.4, lengthM: 1.2, heightM: 0.2, rotation: 0, shape: "rectangle" },
+      plant: { label: "New plant", emoji: "🌱", widthM: 0.7, lengthM: 0.7, heightM: 0.5, rotation: 0, shape: "circle" },
+      tree: { label: "New tree", emoji: "🌳", widthM: 1.2, lengthM: 1.2, heightM: 3, rotation: 0, shape: "circle" },
+      water: { label: "Water feature", emoji: "💧", widthM: 1.5, lengthM: 1.2, heightM: 0, rotation: 0, shape: "rounded" },
+      seat: { label: "Seat", emoji: "", widthM: 1.5, lengthM: 0.5, heightM: 0.8, rotation: 0, shape: "rectangle" },
+      path: { label: "Path", emoji: "", widthM: 1, lengthM: 3, heightM: 0, rotation: 0, shape: "rounded" },
     };
     const item = { id: Date.now(), kind, x: 36, y: 36, ...defaults[kind] };
     setItems((current) => [...current, item]); setSelectedId(item.id);
@@ -332,6 +383,19 @@ export default function Home() {
     if (!selected) return;
     const copy = { ...selected, id: Date.now(), label: `${selected.label} copy`, x: Math.min(82, selected.x + 5), y: Math.min(82, selected.y + 5) };
     setItems((current) => [...current, copy]); setSelectedId(copy.id);
+  };
+
+  const startDrag = (event: PointerEvent<HTMLButtonElement>, item: GardenItem) => {
+    event.stopPropagation();
+    const canvas = event.currentTarget.parentElement?.getBoundingClientRect();
+    if (!canvas) return;
+    drag.current = {
+      id: item.id,
+      offsetX: event.clientX - (canvas.left + item.x / 100 * canvas.width),
+      offsetY: event.clientY - (canvas.top + item.y / 100 * canvas.height),
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSelectedId(item.id);
   };
 
   const moveItem = (event: PointerEvent<HTMLDivElement>) => {
@@ -408,7 +472,8 @@ export default function Home() {
           <button className="primary-button" onClick={analysed ? saveEntry : analyseEntry} disabled={!journal.trim()}>{analysed ? "Save note" : "Understand my note"}<span>→</span></button>
         </div>
         {recognized && <div className="recognition-wrap"><span className="eyebrow">Plant recognised</span><PlantCard plant={recognized} /></div>}
-        {analysed && !recognized && <div className="general-analysis"><span>✎</span><div><span className="eyebrow">General garden note</span><h3>{proposedTasks.length ? "A task was found" : "No plant needed"}</h3><p>{proposedTasks.length ? <><b>{proposedTasks[0].title}</b> · {proposedTasks[0].due}</> : "This will be saved to your journal without creating an unnecessary task."}</p></div></div>}
+        {analysed && !recognized && <div className="general-analysis"><span>✎</span><div><span className="eyebrow">General garden note</span><h3>{proposedTasks.length ? `${proposedTasks.length} useful ${proposedTasks.length === 1 ? "task" : "tasks"} found` : "No plant needed"}</h3><p>{proposedTasks.length ? "Review what will be added below before saving." : "This will be saved to your journal without creating an unnecessary task."}</p></div></div>}
+        {analysed && <div className="task-preview"><span className="eyebrow">What will be added</span>{proposedTasks.length ? proposedTasks.map((planned) => <div key={planned.id}><span>{planned.emoji}</span><p><b>{planned.title}</b><small>{planned.due} · {planned.detail}</small></p></div>) : <p className="note-only">Journal note only — no reminder will be created.</p>}</div>}
         <div className="section-title journal-history"><div><span className="eyebrow">Your history</span><h2>{entries.length ? "From your garden" : "No entries yet"}</h2></div></div>
         {entries.length ? <div className="entry-list">{entries.map((entry) => <article className="entry-card" key={entry.id}><div className="entry-date"><span>{entry.date}</span><i /></div><div><div className="entry-plant"><span>{entry.plant?.emoji ?? "✎"}</span>{entry.plant?.name ?? "Garden note"}</div><p>{entry.text}</p></div></article>)}</div> : <p className="empty-copy">Your journal starts blank—no demo plants and no assumed jobs.</p>}
       </section>}
@@ -421,10 +486,11 @@ export default function Home() {
           <label className="wide-field">Name<input value={selected.label} onChange={(event) => updateSelected({ label: event.target.value })} /></label>
           <div className="measure-fields"><MeasurementField key={`${selected.id}-width`} label="Width (m)" value={selected.widthM} min={0.1} max={PLOT_WIDTH} onCommit={(value) => updateSelected({ widthM: value })} /><MeasurementField key={`${selected.id}-length`} label="Length (m)" value={selected.lengthM} min={0.1} max={PLOT_LENGTH} onCommit={(value) => updateSelected({ lengthM: value })} />{(selected.kind === "plant" || selected.kind === "tree") && <MeasurementField key={`${selected.id}-height`} label="Height (m)" value={selected.heightM} min={0.1} max={20} onCommit={(value) => updateSelected({ heightM: value })} />}</div>
           <div className="shape-row"><span>Shape</span>{(["rectangle", "rounded", "circle"] as GardenItem["shape"][]).map((shape) => <button key={shape} className={selected.shape === shape ? "active" : ""} onClick={() => updateSelected({ shape })}>{shape}</button>)}</div>
+          <div className="rotation-row"><span>Rotation</span><button aria-label="Rotate 15 degrees anticlockwise" onClick={() => updateSelected({ rotation: ((selected.rotation ?? 0) - 15 + 360) % 360 })}>↶ 15°</button><input aria-label="Rotation in degrees" type="range" min="0" max="355" step="5" value={selected.rotation ?? 0} onChange={(event) => updateSelected({ rotation: Number(event.target.value) })} /><strong>{selected.rotation ?? 0}°</strong><button aria-label="Rotate 15 degrees clockwise" onClick={() => updateSelected({ rotation: ((selected.rotation ?? 0) + 15) % 360 })}>15° ↷</button></div>
         </div>}
         <div className="garden-canvas measured" onPointerMove={moveItem} onPointerUp={() => { drag.current = null; }} onPointerLeave={() => { drag.current = null; }} onClick={() => setSelectedId(null)}>
           {!items.length && <div className="canvas-empty"><span>+</span><b>Your plot is empty</b><small>Use the buttons above to add what’s really there.</small></div>}
-          {items.map((item) => { const width = Math.min(100, item.widthM / PLOT_WIDTH * 100); const height = Math.min(100, item.lengthM / PLOT_LENGTH * 100); return <button key={item.id} className={`garden-item ${item.kind} shape-${item.shape} ${selectedId === item.id ? "selected" : ""}`} style={{ left: `${item.x}%`, top: `${item.y}%`, width: `${width}%`, height: `${height}%` }} onClick={(event) => { event.stopPropagation(); setSelectedId(item.id); }} onPointerDown={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); drag.current = { id: item.id, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top }; event.currentTarget.setPointerCapture(event.pointerId); setSelectedId(item.id); }}><span>{item.emoji}</span><small>{item.label}</small><i>{item.widthM} × {item.lengthM} m</i></button>; })}
+          {items.map((item) => { const width = Math.min(100, item.widthM / PLOT_WIDTH * 100); const height = Math.min(100, item.lengthM / PLOT_LENGTH * 100); const style = { left: `${item.x}%`, top: `${item.y}%`, width: `${width}%`, height: `${height}%`, "--rotation": `${item.rotation ?? 0}deg` } as CSSProperties; return <button key={item.id} className={`garden-item ${item.kind} shape-${item.shape} ${selectedId === item.id ? "selected" : ""}`} style={style} onClick={(event) => { event.stopPropagation(); setSelectedId(item.id); }} onPointerDown={(event) => startDrag(event, item)}><span>{item.emoji}</span><small>{item.label}</small><i>{item.widthM} × {item.lengthM} m · {item.rotation ?? 0}°</i></button>; })}
           <span className={`north north-${orientation.toLowerCase()}`}>{orientation} ↑</span><span className="scale-bar">1 metre</span>
         </div>
         <div className="canvas-footer"><span><b>{PLOT_WIDTH * PLOT_LENGTH} m²</b><small>Total plot</small></span><span><b>{items.length}</b><small>Features</small></span><button onClick={savePlan}>Save plan</button></div>
@@ -433,9 +499,11 @@ export default function Home() {
 
       {tab === "plants" && <section className="screen plants-screen">
         <div className="page-heading"><span className="eyebrow">Plant catalogue</span><h1>Know what your<br /><em>plants need.</em></h1><p>Search common or botanical names for light, height, water and known vulnerabilities.</p></div>
-        <form className="plant-search" onSubmit={(event) => { event.preventDefault(); void searchGlobalPlants(plantQuery); }}><span>⌕</span><input value={plantQuery} onChange={(event) => { const value = event.target.value; setPlantQuery(value); setPlantResults(builtInPlants.filter((plant) => fuzzyPlantMatch(plant, value)).slice(0, 12)); if (searchTimer.current) window.clearTimeout(searchTimer.current); if (value.trim().length >= 3) searchTimer.current = window.setTimeout(() => { void searchGlobalPlants(value); }, 450); }} placeholder="Type lav, lavender, or a botanical name…" /><button>{catalogueLoading ? "Searching…" : "Search"}</button></form>
-        <div className="catalogue-status"><span>{globalCatalogue ? "Global catalogue connected" : `${builtInPlants.length} detailed garden plants built in`}</span>{globalCatalogue === false && <small>Global search needs the optional free catalogue connection.</small>}</div>
-        <div className="catalogue-list">{plantResults.map((plant) => <PlantCard key={plant.key} plant={plant} onAdd={() => { setItems((current) => [...current, { id: Date.now(), kind: plant.heightM && plant.heightM >= 2.5 ? "tree" : "plant", label: plant.name, emoji: plant.emoji, x: 36, y: 36, widthM: .7, lengthM: .7, heightM: plant.heightM ?? .6, shape: "circle" }]); showToast(`${plant.name} added to your plot`); }} />)}</div>
+        <form className="plant-search" onSubmit={(event) => { event.preventDefault(); void searchGlobalPlants(plantQuery, 1); }}><span>⌕</span><input value={plantQuery} onChange={(event) => { const value = event.target.value; setPlantQuery(value); setPlantResults(value.trim() ? builtInPlants.filter((plant) => fuzzyPlantMatch(plant, value)).slice(0, 12) : builtInPlants); if (searchTimer.current) window.clearTimeout(searchTimer.current); searchTimer.current = window.setTimeout(() => { void searchGlobalPlants(value, 1); }, value.trim().length >= 3 ? 450 : 250); }} placeholder="Type lav, lavender, or a botanical name…" /><button>{catalogueLoading ? "Searching…" : "Search"}</button></form>
+        <div className="catalogue-status"><span>{globalCatalogue === null ? "Connecting to the full catalogue…" : catalogueError ? "Catalogue connection needs attention" : globalCatalogue ? `${catalogueTotal?.toLocaleString("en-GB") ?? "Full"} plants available · ${plantResults.length} shown` : `${builtInPlants.length} detailed garden plants built in`}</span>{globalCatalogue === false && <small>The TREFLE_TOKEN secret is not reaching this deployment.</small>}{catalogueError && <small>{catalogueError}</small>}</div>
+        {plantQuery && <button className="browse-all" onClick={() => { setPlantQuery(""); void searchGlobalPlants("", 1); }}>← Browse the full catalogue</button>}
+        <div className="catalogue-list">{plantResults.map((plant) => <PlantCard key={plant.key} plant={plant} onAdd={() => { setItems((current) => [...current, { id: Date.now(), kind: plant.heightM && plant.heightM >= 2.5 ? "tree" : "plant", label: plant.name, emoji: plant.emoji, x: 36, y: 36, widthM: .7, lengthM: .7, heightM: plant.heightM ?? .6, rotation: 0, shape: "circle" }]); showToast(`${plant.name} added to your plot`); }} />)}</div>
+        {globalCatalogue && catalogueHasMore && <button className="load-more" disabled={catalogueLoading} onClick={() => { void searchGlobalPlants(plantQuery, cataloguePage + 1, true); }}>{catalogueLoading ? "Loading…" : "Load more plants"}</button>}
         {!catalogueLoading && !plantResults.length && <p className="empty-copy">No matches found. Try the botanical name or a broader term.</p>}
       </section>}
 

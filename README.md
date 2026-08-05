@@ -7,12 +7,13 @@ An iPhone-friendly gardening journal that turns natural-language notes into plan
 - Starts clean for every new session with no assumed plants or demo jobs
 - Recognises a broad built-in set of common garden plants in journal notes
 - Shows light, watering, soil, spacing, harvest and common-problem guidance
-- Creates watering, care and harvest reminders from planting entries
+- Uses intent-aware journal analysis so buying, planning, completed work and actual planting do not create the same reminders
+- Shows every proposed reminder for review before a note is saved
 - Understands general timed jobs such as `water the flower bed tomorrow at 19:00` without requiring a plant
 - Saves journal entries, reminders and garden layouts in Cloudflare D1
-- Provides a measured touch-friendly planner with unlimited features, dimensions, shapes, orientation and dynamic layout advice
+- Provides a measured touch-friendly planner with unlimited features, editable dimensions, shapes, item rotation, orientation and dynamic layout advice
 - Loads local current weather only after the user grants location permission
-- Includes 24 detailed common garden plants and optional global Trefle catalogue search
+- Includes 24 detailed common garden plants plus a paginated, browsable global Trefle catalogue
 - Supports live prefix and typo-tolerant plant search, including soil preferences when the source records them
 - Requests browser notification permission from an explicit user action
 - Responsive layout designed primarily for iPhone

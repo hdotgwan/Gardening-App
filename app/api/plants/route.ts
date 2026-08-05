@@ -7,6 +7,12 @@ type TrefleSummary = {
   image_url?: string | null;
 };
 
+type TrefleCollection = {
+  data?: TrefleSummary[];
+  links?: { next?: string | null };
+  meta?: { total?: number | null };
+};
+
 type TrefleDetail = {
   data?: {
     common_name?: string | null;
@@ -70,25 +76,29 @@ function plantEmoji(name: string) {
 }
 
 export async function GET(request: Request) {
-  const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
+  const requestUrl = new URL(request.url);
+  const query = requestUrl.searchParams.get("q")?.trim() ?? "";
+  const requestedPage = Number.parseInt(requestUrl.searchParams.get("page") ?? "1", 10);
+  const page = Number.isFinite(requestedPage) ? Math.max(1, requestedPage) : 1;
   const runtimeEnv = env as unknown as { TREFLE_TOKEN?: string };
   const token = runtimeEnv.TREFLE_TOKEN;
 
-  if (!token || query.length < 2) {
-    return Response.json({ plants: [], configured: Boolean(token) });
+  if (!token || (query.length > 0 && query.length < 2)) {
+    return Response.json({ plants: [], configured: Boolean(token), hasMore: false, total: null });
   }
 
   try {
-    const searchUrl = new URL("https://trefle.io/api/v1/plants/search");
+    const searchUrl = new URL(query ? "https://trefle.io/api/v1/plants/search" : "https://trefle.io/api/v1/plants");
     searchUrl.searchParams.set("token", token);
-    searchUrl.searchParams.set("q", query);
+    searchUrl.searchParams.set("page", String(page));
+    if (query) searchUrl.searchParams.set("q", query);
     const searchResponse = await fetch(searchUrl, { headers: { Accept: "application/json" } });
     if (!searchResponse.ok) throw new Error(`Catalogue returned ${searchResponse.status}`);
-    let search = await searchResponse.json() as { data?: TrefleSummary[] };
+    let search = await searchResponse.json() as TrefleCollection;
     if (!(search.data?.length) && query.length > 3) {
       searchUrl.searchParams.set("q", query.slice(0, 3));
       const prefixResponse = await fetch(searchUrl, { headers: { Accept: "application/json" } });
-      if (prefixResponse.ok) search = await prefixResponse.json() as { data?: TrefleSummary[] };
+      if (prefixResponse.ok) search = await prefixResponse.json() as TrefleCollection;
     }
     const matches = (search.data ?? []).slice(0, 8);
 
@@ -125,8 +135,8 @@ export async function GET(request: Request) {
       };
     }));
 
-    return Response.json({ plants, configured: true });
+    return Response.json({ plants, configured: true, hasMore: Boolean(search.links?.next), total: search.meta?.total ?? null, page });
   } catch (error) {
-    return Response.json({ plants: [], configured: true, error: error instanceof Error ? error.message : "Catalogue unavailable" }, { status: 502 });
+    return Response.json({ plants: [], configured: true, hasMore: false, total: null, error: error instanceof Error ? error.message : "Catalogue unavailable" }, { status: 502 });
   }
 }

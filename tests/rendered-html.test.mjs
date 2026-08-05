@@ -36,7 +36,12 @@ test("includes the requested product capabilities", async () => {
 
   assert.match(page, /detectLocalPlant/);
   assert.match(page, /Understand my note/);
+  assert.match(page, /tasksFromJournal/);
+  assert.match(page, /Buy \$\{plant\.name\} plants/);
+  assert.match(page, /What will be added/);
   assert.match(page, /garden-canvas/);
+  assert.match(page, /Rotation in degrees/);
+  assert.match(page, /Load more plants/);
   assert.match(page, /Notification\.requestPermission/);
   assert.match(schema, /journalEntries/);
   assert.match(schema, /reminders/);
