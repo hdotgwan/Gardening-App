@@ -340,6 +340,11 @@ h1 em { color: var(--forest-2); font-weight: 500; }
 .empty-copy { padding: 17px; text-align: center; color: var(--muted); font-size: 11px; line-height: 1.5; border: 1px dashed var(--line); border-radius: 13px; }
 .recognition-wrap { margin-top: 24px; }
 .recognition-wrap > .eyebrow { display: block; margin-bottom: 8px; }
+.general-analysis { display: flex; gap: 12px; align-items: center; margin-top: 16px; padding: 15px; background: #eef0e5; border-radius: 16px 16px 5px 16px; border-left: 3px solid var(--forest-2); }
+.general-analysis > span { width: 40px; height: 40px; display: grid; place-items: center; flex: 0 0 auto; background: white; border-radius: 50%; font-size: 18px; }
+.general-analysis h3 { font-size: 18px; margin: 5px 0 3px; font-weight: 500; }
+.general-analysis p { color: var(--muted); font-size: 9px; margin: 0; line-height: 1.4; }
+.general-analysis p b { color: var(--ink); }
 
 .catalogue-card { background: rgba(255,255,255,.55); border: 1px solid var(--line); border-radius: 18px 18px 5px 18px; padding: 14px; margin-top: 10px; }
 .catalogue-heading { display: grid; grid-template-columns: 42px 1fr auto; gap: 10px; align-items: center; }
@@ -347,7 +352,7 @@ h1 em { color: var(--forest-2); font-weight: 500; }
 .catalogue-heading h3 { font-size: 18px; margin: 0 0 2px; font-weight: 500; }
 .catalogue-heading p { color: var(--muted); font-size: 9px; margin: 0; font-style: italic; }
 .catalogue-heading button { border: 0; border-radius: 16px; background: var(--forest); color: white; padding: 6px 10px; font-size: 9px; cursor: pointer; }
-.plant-facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 13px 0 9px; }
+.plant-facts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin: 13px 0 9px; }
 .plant-facts span { background: rgba(219,230,207,.55); padding: 8px; border-radius: 8px; min-width: 0; }
 .plant-facts small { display: block; color: var(--muted); text-transform: uppercase; letter-spacing: .7px; font-size: 7px; }
 .plant-facts b { display: block; font-size: 9px; margin-top: 3px; line-height: 1.25; }

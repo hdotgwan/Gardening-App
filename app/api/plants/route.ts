@@ -16,6 +16,9 @@ type TrefleDetail = {
       growth?: {
         light?: number | null;
         soil_humidity?: number | null;
+        soil_texture?: number | null;
+        ph_minimum?: number | null;
+        ph_maximum?: number | null;
         days_to_harvest?: number | null;
         row_spacing?: { cm?: number | null } | null;
       } | null;
@@ -44,6 +47,19 @@ function waterLabel(value?: number | null) {
   return "Low / drought tolerant";
 }
 
+function soilLabel(texture?: number | null, phMin?: number | null, phMax?: number | null) {
+  let textureLabel = "Soil type not recorded";
+  if (texture != null) {
+    if (texture <= 2) textureLabel = "Clay or moisture-retentive";
+    else if (texture <= 4) textureLabel = "Clay-loam or loam";
+    else if (texture <= 6) textureLabel = "Loamy, free-draining";
+    else if (texture <= 8) textureLabel = "Sandy or gritty";
+    else textureLabel = "Rocky, very free-draining";
+  }
+  const ph = phMin != null && phMax != null ? ` · pH ${phMin}–${phMax}` : "";
+  return `${textureLabel}${ph}`;
+}
+
 function plantEmoji(name: string) {
   const lower = name.toLowerCase();
   if (/tree|apple|pear|cherry|oak|maple|birch|willow/.test(lower)) return "🌳";
@@ -68,8 +84,13 @@ export async function GET(request: Request) {
     searchUrl.searchParams.set("q", query);
     const searchResponse = await fetch(searchUrl, { headers: { Accept: "application/json" } });
     if (!searchResponse.ok) throw new Error(`Catalogue returned ${searchResponse.status}`);
-    const search = await searchResponse.json() as { data?: TrefleSummary[] };
-    const matches = (search.data ?? []).slice(0, 6);
+    let search = await searchResponse.json() as { data?: TrefleSummary[] };
+    if (!(search.data?.length) && query.length > 3) {
+      searchUrl.searchParams.set("q", query.slice(0, 3));
+      const prefixResponse = await fetch(searchUrl, { headers: { Accept: "application/json" } });
+      if (prefixResponse.ok) search = await prefixResponse.json() as { data?: TrefleSummary[] };
+    }
+    const matches = (search.data ?? []).slice(0, 8);
 
     const plants = await Promise.all(matches.map(async (match) => {
       let detail: TrefleDetail["data"] | undefined;
@@ -93,7 +114,7 @@ export async function GET(request: Request) {
         emoji: plantEmoji(name),
         sun: lightLabel(growth?.light),
         water: waterLabel(growth?.soil_humidity),
-        soil: "Check regional growing guidance",
+        soil: soilLabel(growth?.soil_texture, growth?.ph_minimum, growth?.ph_maximum),
         heightM: typeof heightCm === "number" ? Math.round(heightCm / 10) / 100 : null,
         spacing: growth?.row_spacing?.cm ? `${growth.row_spacing.cm} cm` : "Not recorded",
         harvestDays: growth?.days_to_harvest ?? undefined,

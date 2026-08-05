@@ -99,16 +99,77 @@ function PlantCard({ plant, onAdd }: { plant: Plant; onAdd?: () => void }) {
         <span><small>Light</small><b>{plant.sun}</b></span>
         <span><small>Height</small><b>{plant.heightM ? `Up to ${plant.heightM} m` : "Not recorded"}</b></span>
         <span><small>Water</small><b>{plant.water}</b></span>
+        <span><small>Soil</small><b>{plant.soil}</b></span>
       </div>
       <p className="susceptibility"><b>Watch for</b>{plant.issue}</p>
     </article>
   );
 }
 
+function MeasurementField({ label, value, min, max, onCommit }: { label: string; value: number; min: number; max: number; onCommit: (value: number) => void }) {
+  const [draft, setDraft] = useState(value.toFixed(1));
+  useEffect(() => setDraft(value.toFixed(1)), [value]);
+
+  const commit = () => {
+    const parsed = Number.parseFloat(draft);
+    const next = Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : value;
+    onCommit(Math.round(next * 10) / 10);
+    setDraft((Math.round(next * 10) / 10).toFixed(1));
+  };
+
+  return <label>{label}<input type="text" inputMode="decimal" value={draft} onChange={(event) => { if (/^\d*(?:\.\d?)?$/.test(event.target.value)) setDraft(event.target.value); }} onBlur={commit} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /></label>;
+}
+
+function fuzzyPlantMatch(plant: Plant, query: string) {
+  const needle = query.toLowerCase().trim();
+  if (!needle) return true;
+  const haystack = `${plant.name} ${plant.scientific}`.toLowerCase();
+  if (haystack.includes(needle)) return true;
+  const distance = (a: string, b: string) => {
+    const row = Array.from({ length: b.length + 1 }, (_, index) => index);
+    for (let i = 1; i <= a.length; i += 1) {
+      let previous = row[0]; row[0] = i;
+      for (let j = 1; j <= b.length; j += 1) {
+        const saved = row[j];
+        row[j] = Math.min(row[j] + 1, row[j - 1] + 1, previous + (a[i - 1] === b[j - 1] ? 0 : 1));
+        previous = saved;
+      }
+    }
+    return row[b.length];
+  };
+  return haystack.split(/\s+/).some((word) => distance(needle, word) <= Math.max(1, Math.floor(needle.length * .25)));
+}
+
+function explicitTaskFromText(text: string): Task | null {
+  const lower = text.toLowerCase();
+  if (!/\b(water|feed|fertili[sz]e|prune|trim|cut back|weed|plant|sow|harvest|check|move|repot|mow|deadhead|spray|protect)\b/.test(lower)) return null;
+  const day = /\btomorrow\b/.test(lower) ? "Tomorrow" : /\btoday\b/.test(lower) ? "Today" : null;
+  const clock = lower.match(/\b(?:at\s*)?([01]?\d|2[0-3])[:.]([0-5]\d)\b/);
+  const meridiem = lower.match(/\b(?:at\s*)?(1[0-2]|0?[1-9])\s*(am|pm)\b/);
+  if (!day && !clock && !meridiem) return null;
+  let time = "";
+  if (clock) time = `${clock[1].padStart(2, "0")}:${clock[2]}`;
+  if (meridiem) {
+    let hour = Number(meridiem[1]) % 12;
+    if (meridiem[2] === "pm") hour += 12;
+    time = `${String(hour).padStart(2, "0")}:00`;
+  }
+  let title = text
+    .replace(/\b(today|tomorrow)\b/gi, "")
+    .replace(/\b(?:at\s*)?(?:[01]?\d|2[0-3])[:.]\d{2}\b/gi, "")
+    .replace(/\b(?:at\s*)?(?:1[0-2]|0?[1-9])\s*(?:am|pm)\b/gi, "")
+    .replace(/^(?:please\s+|remember to\s+|i need to\s+|i should\s+)/i, "")
+    .replace(/[.!]+$/g, "").replace(/\s+/g, " ").trim();
+  title = title.charAt(0).toUpperCase() + title.slice(1);
+  return { id: Date.now(), due: `${day ?? "Scheduled"}${time ? ` · ${time}` : ""}`, title, detail: "Created directly from your journal note", emoji: /water/.test(lower) ? "💧" : "✓", done: false };
+}
+
 export default function Home() {
   const [tab, setTab] = useState<Tab>("today");
   const [journal, setJournal] = useState("");
   const [recognized, setRecognized] = useState<Plant | null>(null);
+  const [analysed, setAnalysed] = useState(false);
+  const [proposedTasks, setProposedTasks] = useState<Task[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [items, setItems] = useState<GardenItem[]>([]);
@@ -121,6 +182,7 @@ export default function Home() {
   const [plantResults, setPlantResults] = useState<Plant[]>(builtInPlants.slice(0, 8));
   const [catalogueLoading, setCatalogueLoading] = useState(false);
   const [globalCatalogue, setGlobalCatalogue] = useState<boolean | null>(null);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const drag = useRef<{ id: number; offsetX: number; offsetY: number } | null>(null);
 
   const dateLabel = useMemo(() => new Intl.DateTimeFormat("en-GB", { weekday: "long", day: "numeric", month: "long" }).format(new Date()), []);
@@ -180,7 +242,7 @@ export default function Home() {
   };
 
   const searchGlobalPlants = async (query: string) => {
-    const local = builtInPlants.filter((plant) => `${plant.name} ${plant.scientific}`.toLowerCase().includes(query.toLowerCase()));
+    const local = builtInPlants.filter((plant) => fuzzyPlantMatch(plant, query));
     if (!query.trim()) { setPlantResults(builtInPlants.slice(0, 8)); return builtInPlants.slice(0, 8); }
     setCatalogueLoading(true);
     try {
@@ -200,7 +262,8 @@ export default function Home() {
 
   const analyseEntry = async () => {
     let plant = detectLocalPlant(journal);
-    if (!plant) {
+    const directTask = explicitTaskFromText(journal);
+    if (!plant && !directTask) {
       const candidates = journal.toLowerCase().replace(/[^a-z\s-]/g, " ").split(/\s+/).filter((word) => word.length > 3 && !["planted", "planting", "watered", "today", "garden", "noticed", "leaves", "seeded", "sowed"].includes(word));
       for (const candidate of candidates.slice(0, 4)) {
         const results = await searchGlobalPlants(candidate);
@@ -208,14 +271,18 @@ export default function Home() {
         if (exact) { plant = exact; break; }
       }
     }
+    const suggestions = directTask ? [directTask] : tasksFromEntry(journal, plant);
     setRecognized(plant);
-    if (!plant) showToast("I couldn’t identify the plant — try its common or botanical name");
+    setProposedTasks(suggestions);
+    setAnalysed(true);
   };
 
   const tasksFromEntry = (text: string, plant: Plant | null): Task[] => {
     const lower = text.toLowerCase();
     const name = plant?.name ?? "this planting";
     const created: Task[] = [];
+    const explicitTask = explicitTaskFromText(text);
+    if (explicitTask) return [explicitTask];
     if (/plant|sow|seed|transplant/.test(lower)) {
       created.push({ id: Date.now(), due: relativeDay(1), title: `Check soil around ${name.toLowerCase()}`, detail: "Water only if the top layer feels dry", emoji: "💧", done: false });
       created.push({ id: Date.now() + 1, due: relativeDay(7), title: `Check ${name.toLowerCase()} progress`, detail: plant?.tip ?? "Look for healthy new growth", emoji: plant?.emoji ?? "🌱", done: false });
@@ -233,13 +300,13 @@ export default function Home() {
   const saveEntry = async () => {
     if (!journal.trim()) return;
     const plant = recognized ?? detectLocalPlant(journal);
-    const newTasks = tasksFromEntry(journal, plant);
+    const newTasks = analysed ? proposedTasks : tasksFromEntry(journal, plant);
     setEntries((current) => [{ id: Date.now(), date: "Today", text: journal.trim(), plant }, ...current]);
     setTasks((current) => [...newTasks, ...current]);
     try {
       await fetch("/api/journal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body: journal.trim(), plantKey: plant?.key ?? null }) });
     } catch { /* stays available in the current session */ }
-    setJournal(""); setRecognized(null);
+    setJournal(""); setRecognized(null); setAnalysed(false); setProposedTasks([]);
     showToast(newTasks.length ? `Note saved · ${newTasks.length} reminder${newTasks.length === 1 ? "" : "s"} added` : "Note saved · no action needed");
   };
 
@@ -336,11 +403,12 @@ export default function Home() {
 
       {tab === "journal" && <section className="screen journal-screen">
         <div className="page-heading"><span className="eyebrow">Garden journal</span><h1>Capture what’s<br /><em>growing on.</em></h1><p>Write naturally. Planting, watering, pruning and problems can become useful reminders.</p></div>
-        <div className="journal-composer"><div className="composer-top"><span>New note · {dateLabel}</span><span className="ink-dot" /></div><textarea value={journal} onChange={(event) => { setJournal(event.target.value); setRecognized(null); }} placeholder="I planted echinacea beside the back fence today…" />
+        <div className="journal-composer"><div className="composer-top"><span>New note · {dateLabel}</span><span className="ink-dot" /></div><textarea value={journal} onChange={(event) => { setJournal(event.target.value); setRecognized(null); setAnalysed(false); setProposedTasks([]); }} placeholder="I planted echinacea… or water the flower bed tomorrow at 19:00" />
           <div className="suggestion-chips"><button onClick={() => setJournal("I planted tomatoes today.")}>+ planted</button><button onClick={() => setJournal("I noticed mildew on the courgette leaves.")}>+ spotted an issue</button><button onClick={() => setJournal("I watered the hydrangea this morning.")}>+ watered</button></div>
-          <button className="primary-button" onClick={recognized ? saveEntry : analyseEntry} disabled={!journal.trim()}>{recognized ? "Save note & create reminders" : "Understand my note"}<span>→</span></button>
+          <button className="primary-button" onClick={analysed ? saveEntry : analyseEntry} disabled={!journal.trim()}>{analysed ? "Save note" : "Understand my note"}<span>→</span></button>
         </div>
         {recognized && <div className="recognition-wrap"><span className="eyebrow">Plant recognised</span><PlantCard plant={recognized} /></div>}
+        {analysed && !recognized && <div className="general-analysis"><span>✎</span><div><span className="eyebrow">General garden note</span><h3>{proposedTasks.length ? "A task was found" : "No plant needed"}</h3><p>{proposedTasks.length ? <><b>{proposedTasks[0].title}</b> · {proposedTasks[0].due}</> : "This will be saved to your journal without creating an unnecessary task."}</p></div></div>}
         <div className="section-title journal-history"><div><span className="eyebrow">Your history</span><h2>{entries.length ? "From your garden" : "No entries yet"}</h2></div></div>
         {entries.length ? <div className="entry-list">{entries.map((entry) => <article className="entry-card" key={entry.id}><div className="entry-date"><span>{entry.date}</span><i /></div><div><div className="entry-plant"><span>{entry.plant?.emoji ?? "✎"}</span>{entry.plant?.name ?? "Garden note"}</div><p>{entry.text}</p></div></article>)}</div> : <p className="empty-copy">Your journal starts blank—no demo plants and no assumed jobs.</p>}
       </section>}
@@ -351,7 +419,7 @@ export default function Home() {
         <div className="palette expanded"><button onClick={() => addItem("bed")}><span className="palette-bed" />+ Bed</button><button onClick={() => addItem("plant")}><span>🌱</span>+ Plant</button><button onClick={() => addItem("tree")}><span>🌳</span>+ Tree</button><button onClick={() => addItem("water")}><span>💧</span>+ Water</button><button onClick={() => addItem("path")}><span className="palette-path" />+ Path</button><button onClick={() => addItem("seat")}><span className="palette-seat">═</span>+ Seat</button></div>
         {selected && <div className="object-inspector"><div className="inspector-top"><span className="eyebrow">Editing {selected.kind}</span><div><button onClick={duplicateSelected}>Duplicate</button><button className="danger" onClick={() => { setItems((current) => current.filter((item) => item.id !== selected.id)); setSelectedId(null); }}>Delete</button></div></div>
           <label className="wide-field">Name<input value={selected.label} onChange={(event) => updateSelected({ label: event.target.value })} /></label>
-          <div className="measure-fields"><label>Width (m)<input type="number" min="0.2" max={PLOT_WIDTH} step="0.1" value={selected.widthM} onChange={(event) => updateSelected({ widthM: Math.max(.2, Number(event.target.value)) })} /></label><label>Length (m)<input type="number" min="0.2" max={PLOT_LENGTH} step="0.1" value={selected.lengthM} onChange={(event) => updateSelected({ lengthM: Math.max(.2, Number(event.target.value)) })} /></label>{(selected.kind === "plant" || selected.kind === "tree") && <label>Height (m)<input type="number" min="0.1" max="20" step="0.1" value={selected.heightM} onChange={(event) => updateSelected({ heightM: Math.max(.1, Number(event.target.value)) })} /></label>}</div>
+          <div className="measure-fields"><MeasurementField key={`${selected.id}-width`} label="Width (m)" value={selected.widthM} min={0.1} max={PLOT_WIDTH} onCommit={(value) => updateSelected({ widthM: value })} /><MeasurementField key={`${selected.id}-length`} label="Length (m)" value={selected.lengthM} min={0.1} max={PLOT_LENGTH} onCommit={(value) => updateSelected({ lengthM: value })} />{(selected.kind === "plant" || selected.kind === "tree") && <MeasurementField key={`${selected.id}-height`} label="Height (m)" value={selected.heightM} min={0.1} max={20} onCommit={(value) => updateSelected({ heightM: value })} />}</div>
           <div className="shape-row"><span>Shape</span>{(["rectangle", "rounded", "circle"] as GardenItem["shape"][]).map((shape) => <button key={shape} className={selected.shape === shape ? "active" : ""} onClick={() => updateSelected({ shape })}>{shape}</button>)}</div>
         </div>}
         <div className="garden-canvas measured" onPointerMove={moveItem} onPointerUp={() => { drag.current = null; }} onPointerLeave={() => { drag.current = null; }} onClick={() => setSelectedId(null)}>
@@ -365,7 +433,7 @@ export default function Home() {
 
       {tab === "plants" && <section className="screen plants-screen">
         <div className="page-heading"><span className="eyebrow">Plant catalogue</span><h1>Know what your<br /><em>plants need.</em></h1><p>Search common or botanical names for light, height, water and known vulnerabilities.</p></div>
-        <form className="plant-search" onSubmit={(event) => { event.preventDefault(); void searchGlobalPlants(plantQuery); }}><span>⌕</span><input value={plantQuery} onChange={(event) => setPlantQuery(event.target.value)} placeholder="Search tomatoes, hostas, Echinacea…" /><button>{catalogueLoading ? "Searching…" : "Search"}</button></form>
+        <form className="plant-search" onSubmit={(event) => { event.preventDefault(); void searchGlobalPlants(plantQuery); }}><span>⌕</span><input value={plantQuery} onChange={(event) => { const value = event.target.value; setPlantQuery(value); setPlantResults(builtInPlants.filter((plant) => fuzzyPlantMatch(plant, value)).slice(0, 12)); if (searchTimer.current) window.clearTimeout(searchTimer.current); if (value.trim().length >= 3) searchTimer.current = window.setTimeout(() => { void searchGlobalPlants(value); }, 450); }} placeholder="Type lav, lavender, or a botanical name…" /><button>{catalogueLoading ? "Searching…" : "Search"}</button></form>
         <div className="catalogue-status"><span>{globalCatalogue ? "Global catalogue connected" : `${builtInPlants.length} detailed garden plants built in`}</span>{globalCatalogue === false && <small>Global search needs the optional free catalogue connection.</small>}</div>
         <div className="catalogue-list">{plantResults.map((plant) => <PlantCard key={plant.key} plant={plant} onAdd={() => { setItems((current) => [...current, { id: Date.now(), kind: plant.heightM && plant.heightM >= 2.5 ? "tree" : "plant", label: plant.name, emoji: plant.emoji, x: 36, y: 36, widthM: .7, lengthM: .7, heightM: plant.heightM ?? .6, shape: "circle" }]); showToast(`${plant.name} added to your plot`); }} />)}</div>
         {!catalogueLoading && !plantResults.length && <p className="empty-copy">No matches found. Try the botanical name or a broader term.</p>}
