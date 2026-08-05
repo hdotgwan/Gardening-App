@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "plot-and-petal",
-  "main": "vinext/server/fetch-handler",
+  "main": "./worker/index.ts",
   "compatibility_date": "2026-08-05",
   "compatibility_flags": ["nodejs_compat"],
   "d1_databases": [
