@@ -1,0 +1,111 @@
+import { env } from "cloudflare:workers";
+
+type TrefleSummary = {
+  common_name: string | null;
+  scientific_name: string;
+  slug: string;
+  image_url?: string | null;
+};
+
+type TrefleDetail = {
+  data?: {
+    common_name?: string | null;
+    scientific_name?: string;
+    slug?: string;
+    main_species?: {
+      growth?: {
+        light?: number | null;
+        soil_humidity?: number | null;
+        days_to_harvest?: number | null;
+        row_spacing?: { cm?: number | null } | null;
+      } | null;
+      specifications?: {
+        average_height?: { cm?: number | null } | null;
+        maximum_height?: { cm?: number | null } | null;
+        toxicity?: string | null;
+      } | null;
+    } | null;
+  };
+};
+
+function lightLabel(value?: number | null) {
+  if (value == null) return "Not recorded";
+  if (value >= 8) return "Full sun";
+  if (value >= 5) return "Sun or part shade";
+  if (value >= 3) return "Part shade";
+  return "Full shade";
+}
+
+function waterLabel(value?: number | null) {
+  if (value == null) return "Not recorded";
+  if (value >= 8) return "Wet or waterside";
+  if (value >= 5) return "Consistently moist";
+  if (value >= 3) return "Moderate";
+  return "Low / drought tolerant";
+}
+
+function plantEmoji(name: string) {
+  const lower = name.toLowerCase();
+  if (/tree|apple|pear|cherry|oak|maple|birch|willow/.test(lower)) return "🌳";
+  if (/tomato|pepper|berry|fruit/.test(lower)) return "🍅";
+  if (/bean|pea/.test(lower)) return "🫛";
+  if (/herb|mint|sage|thyme|basil/.test(lower)) return "🌿";
+  return "🌱";
+}
+
+export async function GET(request: Request) {
+  const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
+  const runtimeEnv = env as unknown as { TREFLE_TOKEN?: string };
+  const token = runtimeEnv.TREFLE_TOKEN;
+
+  if (!token || query.length < 2) {
+    return Response.json({ plants: [], configured: Boolean(token) });
+  }
+
+  try {
+    const searchUrl = new URL("https://trefle.io/api/v1/plants/search");
+    searchUrl.searchParams.set("token", token);
+    searchUrl.searchParams.set("q", query);
+    const searchResponse = await fetch(searchUrl, { headers: { Accept: "application/json" } });
+    if (!searchResponse.ok) throw new Error(`Catalogue returned ${searchResponse.status}`);
+    const search = await searchResponse.json() as { data?: TrefleSummary[] };
+    const matches = (search.data ?? []).slice(0, 6);
+
+    const plants = await Promise.all(matches.map(async (match) => {
+      let detail: TrefleDetail["data"] | undefined;
+      try {
+        const detailUrl = new URL(`https://trefle.io/api/v1/plants/${match.slug}`);
+        detailUrl.searchParams.set("token", token);
+        const response = await fetch(detailUrl, { headers: { Accept: "application/json" } });
+        if (response.ok) detail = ((await response.json()) as TrefleDetail).data;
+      } catch { /* Search results still remain useful without detail. */ }
+
+      const growth = detail?.main_species?.growth;
+      const specifications = detail?.main_species?.specifications;
+      const heightCm = specifications?.average_height?.cm ?? specifications?.maximum_height?.cm ?? null;
+      const name = match.common_name ?? match.scientific_name;
+      const toxicity = specifications?.toxicity && specifications.toxicity !== "none" ? `; ${specifications.toxicity} toxicity recorded` : "";
+
+      return {
+        key: `trefle-${match.slug}`,
+        name,
+        scientific: match.scientific_name,
+        emoji: plantEmoji(name),
+        sun: lightLabel(growth?.light),
+        water: waterLabel(growth?.soil_humidity),
+        soil: "Check regional growing guidance",
+        heightM: typeof heightCm === "number" ? Math.round(heightCm / 10) / 100 : null,
+        spacing: growth?.row_spacing?.cm ? `${growth.row_spacing.cm} cm` : "Not recorded",
+        harvestDays: growth?.days_to_harvest ?? undefined,
+        issue: `No specific disease susceptibility recorded${toxicity}`,
+        tip: "Check local climate and cultivar guidance before planting.",
+        imageUrl: match.image_url ?? undefined,
+        external: true,
+      };
+    }));
+
+    return Response.json({ plants, configured: true });
+  } catch (error) {
+    return Response.json({ plants: [], configured: true, error: error instanceof Error ? error.message : "Catalogue unavailable" }, { status: 502 });
+  }
+}

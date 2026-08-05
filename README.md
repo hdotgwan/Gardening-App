@@ -4,13 +4,32 @@ An iPhone-friendly gardening journal that turns natural-language notes into plan
 
 ## Features
 
-- Recognises French beans, tomatoes, lavender and lettuce in journal notes
+- Starts clean for every new session with no assumed plants or demo jobs
+- Recognises a broad built-in set of common garden plants in journal notes
 - Shows light, watering, soil, spacing, harvest and common-problem guidance
 - Creates watering, care and harvest reminders from planting entries
 - Saves journal entries, reminders and garden layouts in Cloudflare D1
-- Provides a touch-friendly visual garden planner
+- Provides a measured touch-friendly planner with unlimited features, dimensions, shapes, orientation and dynamic layout advice
+- Loads local current weather only after the user grants location permission
+- Includes 24 detailed common garden plants and optional global Trefle catalogue search
 - Requests browser notification permission from an explicit user action
 - Responsive layout designed primarily for iPhone
+
+## Optional global plant catalogue
+
+The app works without another account and includes a detailed starter catalogue. To search Trefle's much larger global botanical catalogue:
+
+1. Create a free account at `https://trefle.io` and copy your personal access token.
+2. In Cloudflare, open the `plot-and-petal` Worker.
+3. Open **Settings → Variables and Secrets**.
+4. Add an encrypted secret named `TREFLE_TOKEN` and paste the token as its value.
+5. Redeploy the Worker.
+
+The token is read only by the server route and is never sent to the browser.
+
+## Weather data
+
+Current conditions use the non-commercial Open-Meteo API after the visitor grants location access. Weather data is provided by Open-Meteo under CC BY 4.0; attribution is included in the interface.
 
 ## Run locally
 

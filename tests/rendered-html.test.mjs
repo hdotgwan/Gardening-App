@@ -34,7 +34,7 @@ test("includes the requested product capabilities", async () => {
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /detectPlant/);
+  assert.match(page, /detectLocalPlant/);
   assert.match(page, /Understand my note/);
   assert.match(page, /garden-canvas/);
   assert.match(page, /Notification\.requestPermission/);
