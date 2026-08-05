@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "plot-and-petal",
+  "main": "vinext/server/fetch-handler",
+  "compatibility_date": "2026-08-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "plot-and-petal",
+      "database_id": "fd5cbffc-3b86-4f6c-9d8f-10386abe3ddc",
+      "migrations_dir": "drizzle"
+    }
+  ]
+}
